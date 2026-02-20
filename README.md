@@ -317,6 +317,7 @@ Thus, the "hole" in the divisor map is structurally impossible for $n > 2$ becau
 
 **Q.E.D. (Lemma 3.1)**
 
+Completion of the critical case. When n ≡ 1 (mod 4) and all prime factors of n are ≡ 1 (mod 4), fix any prime p ≡ 3 (mod 4). Solve 4m ≡ 1 − n (mod p) for m; such m always exists. For this m let r = 4m − 1, x = (n + r)/4, A = n x. Then p | A. By the already-established part of the Aurora Lemma (the case where A is divisible by a prime ≡ 3 (mod 4)), there exists d | A² with d ≡ −A (mod r). The corresponding y, z are positive integers and the identity holds. This exhausts all cases.
 ---
 
 ## 4. The Global Synthesis
