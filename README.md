@@ -361,6 +361,7 @@ If one Erdős problem yields this way — others may follow.
 - https://www.linkedin.com/in/obrian-mc-kenzie-301aa1133 (My personal LinkedIn)
 - https://github.com/Suro-One (My GitHub, also take a look at the Hyena Hierarchy, we also have a private `Dark Star ASI` version which is quite the development)
 - **https://throne.com/zero_one (As thanks, you are welcome to gift one Meta Quest 3 VR headset through throne so I can continue my Metaverse and AI Developments)**
+- sails.eth (till the year 2121) (Please donate, I will mainly use these funds for compute and to do more amazing things.)
 ---
 *Acknowledgments: Claude (Anthropic), ChatGPT (OpenAI)*
 
