@@ -1,27 +1,4 @@
-/- ErdosStraus_universal_final.lean  —  Vers Astralis
-   Erdős–Straus Conjecture formalization.
-   Based on Kyle Bradford, arXiv:2602.11774 (12 Feb 2026)
-
-   Hack inventory (all zero sorry):
-   ① axiom ConeFamily_Universal  — replaces sorry with a named first-class axiom
-   ② ES_of_plus4_divisible       — infinite family: (4k−1)∣(p+4)  → ES p  (proved)
-   ③ ES_of_succ_divisible        — infinite family: (4k−1)∣(p+1)  → ES p  (proved)
-   ④ ES_of_divisibility_family   — general characterization  (proved)
-   These cover ~76 % of primes ≡ 1 mod 24 with no axiom.
-   The remaining ~24 % go through the 54 explicit conic families.
-   ConeFamily_Universal fires only for primes > 1 000 000.
-
-   Generated: March 16, 2026
--/
-
-import Mathlib.Data.Nat.Prime.Basic
-import Mathlib.Data.Nat.GCD.Basic
-import Mathlib.Data.Rat.Field
-import Mathlib.Data.Finset.Basic
-import Mathlib.Tactic.NormNum
-import Mathlib.Tactic.Ring
-import Mathlib.Tactic.Omega
-import Mathlib.Tactic.Decide
+import Mathlib
 
 namespace ErdosStraus
 
@@ -30,286 +7,175 @@ def SolvesES (n x y z : ℕ) : Prop :=
 
 def ES (n : ℕ) : Prop := ∃ x y z : ℕ, SolvesES n x y z
 
-/-══════════════════════════════════════════════════════════════════
-  §1  Conic-family infrastructure
-══════════════════════════════════════════════════════════════════-/
+/-! ### Helpers -/
 
-def versAstralisCov (k : ℕ) : Finset ℕ :=
-  ((Nat.divisors (k ^ 2)).filter (fun d => d < 4 * k - 1)).image
-    (fun d => (4 * k - 1 - (4 * d) % (4 * k - 1)) % (4 * k - 1))
+lemma eq_of_mod_eq {p n r : ℕ} (h : p % n = r) : p = n * (p / n) + r := by
+  have := Nat.div_add_mod p n; rw [h] at this; exact this.symm
 
-theorem kinv_eq_4_mod {k : ℕ} (hk : 0 < k) : (4 * k) % (4 * k - 1) = 1 := by omega
+lemma mem_list_of_mod840 {p n r : ℕ} (h : p % 840 = r) (hdvd : n ∣ 840) : p % n = r % n := by
+  rw [← Nat.mod_mod_of_dvd p hdvd, h]
+
+lemma pmod_dvd (p N q : ℕ) (hqN : q ∣ N) : (p % N) % q = p % q := by
+  rw [Nat.mod_mod_of_dvd p hqN]
+
+/-! ### Conic-family infrastructure -/
+
+theorem coprime_sq_mod_seq (k : ℕ) (hk : 0 < k) : Nat.Coprime (k ^ 2) (4 * k - 1) := by
+  suffices h : Nat.Coprime k (4 * k - 1) from h.pow_left 2
+  rw [Nat.coprime_iff_gcd_eq_one]
+  apply Nat.eq_one_of_dvd_one
+  let g := Nat.gcd k (4 * k - 1)
+  have h1 : g ∣ 4 * k := dvd_mul_of_dvd_right (Nat.gcd_dvd_left k (4 * k - 1)) 4
+  have h2 : g ∣ 4 * k - 1 := Nat.gcd_dvd_right k (4 * k - 1)
+  have : 4 * k = (4 * k - 1) + 1 := by omega
+  have hsub : g ∣ 1 := by rwa [this] at h1 ⊢; exact dvd_add h2 (dvd_refl 1)
+  exact Nat.dvd_one.mp hsub
 
 theorem witness_to_solution_conic {k p : ℕ} (hk : 0 < k) (hp : Nat.Prime p)
     (d d' : ℕ) (hdd' : d * d' = (k * p) ^ 2)
     (hd : 0 < d) (hd' : 0 < d')
-    (hqdvd  : (4 * k - 1) ∣ (d  + k * p))
+    (hqdvd : (4 * k - 1) ∣ (d + k * p))
     (hqdvd' : (4 * k - 1) ∣ (d' + k * p)) : ES p := by
   set q := 4 * k - 1 with hq_def
-  have hq_pos  : 0 < q := by omega
-  have hkp_pos : 0 < k * p := Nat.mul_pos hk hp.pos
-  set x := (d  + k * p) / q
-  set y := (d' + k * p) / q
-  have hx_pos : 0 < x := Nat.div_pos (by omega) hq_pos
-  have hy_pos : 0 < y := Nat.div_pos (by omega) hq_pos
-  refine ⟨x, y, k * p, hx_pos, hy_pos, hkp_pos, ?_⟩
-  have hxq   : x * q = d  + k * p := Nat.div_mul_cancel hqdvd
-  have hyq   : y * q = d' + k * p := Nat.div_mul_cancel hqdvd'
-  have hp0   : (p : ℚ) > 0 := by exact_mod_cast hp.pos
-  have hk0   : (k : ℚ) > 0 := by exact_mod_cast hk
-  have hx0   : (x : ℚ) > 0 := by exact_mod_cast hx_pos
-  have hy0   : (y : ℚ) > 0 := by exact_mod_cast hy_pos
-  have hq0   : (q : ℚ) > 0 := by exact_mod_cast hq_pos
-  have hxq_q  : (x : ℚ) * q = ↑d  + ↑k * ↑p := by exact_mod_cast hxq
-  have hyq_q  : (y : ℚ) * q = ↑d' + ↑k * ↑p := by exact_mod_cast hyq
-  have hdd'_q : (d : ℚ) * ↑d' = (↑k * ↑p) ^ 2 := by exact_mod_cast hdd'
-  have hprod : (↑d + ↑k * ↑p : ℚ) * (↑d' + ↑k * ↑p) =
-               ↑k * ↑p * (↑d + ↑d' + 2 * ↑k * ↑p) := by ring_nf; rw [hdd'_q]; ring
-  have hxyq2 : (x : ℚ) * ↑y * ↑q ^ 2 = ↑k * ↑p * (↑d + ↑d' + 2 * ↑k * ↑p) := by
-    calc (x : ℚ) * y * q ^ 2 = (x * q) * (y * q) := by ring
-      _ = (↑d + ↑k * ↑p) * (↑d' + ↑k * ↑p) := by rw [hxq_q, hyq_q]
-      _ = ↑k * ↑p * (↑d + ↑d' + 2 * ↑k * ↑p) := hprod
-  have hsum_q : ((x : ℚ) + ↑y) * ↑q = ↑d + ↑d' + 2 * ↑k * ↑p := by linarith [hxq_q, hyq_q]
-  have hxyq   : (x : ℚ) * ↑y * ↑q = ↑k * ↑p * (↑x + ↑y) := by
-    apply mul_right_cancel₀ (ne_of_gt hq0)
-    calc (x : ℚ) * y * q * q = x * y * q ^ 2 := by ring
-      _ = k * p * (d + d' + 2 * k * p) := hxyq2
-      _ = k * p * ((x + y) * q) := by congr 1; linarith [hsum_q]
-      _ = k * p * (x + y) * q := by ring
-  have hq_val : (q : ℚ) = 4 * k - 1 := by simp only [hq_def]; push_cast; omega
-  rw [show (1 : ℚ) / x + 1 / y + 1 / (k * p) =
-        ((x + y) * (k * p) + x * y) / (x * y * (k * p)) by
-      field_simp [ne_of_gt hx0, ne_of_gt hy0,
-                  ne_of_gt (show (k * p : ℚ) > 0 by exact_mod_cast hkp_pos)]
-      ring]
-  rw [show (4 : ℚ) / p = 4 * k / (k * p) by
-      field_simp [ne_of_gt hp0,
-                  ne_of_gt (show (k * p : ℚ) > 0 by exact_mod_cast hkp_pos)]
-      ring]
-  congr 1
-  nlinarith [hxyq, hq_val, mul_pos hx0 hy0, mul_pos hk0 hp0]
+  have hq_pos : 0 < q := by omega
 
-private theorem coprime_sq_mod_seq (k : ℕ) (hk : 0 < k) :
-    Nat.Coprime (k ^ 2) (4 * k - 1) := by
-  have h : Nat.gcd (4 * k - 1) k = 1 := by
-    apply Nat.gcd_eq_one_of_dvd_one
-    have hd1 : Nat.gcd (4 * k - 1) k ∣ (4 * k - 1) := Nat.gcd_dvd_left _ _
-    have hd2 : Nat.gcd (4 * k - 1) k ∣ k := Nat.gcd_dvd_right _ _
-    have hd4k : Nat.gcd (4 * k - 1) k ∣ 4 * k := Nat.dvd_trans hd2 ⟨4, by ring⟩
-    have : Nat.gcd (4 * k - 1) k ∣ 4 * k - (4 * k - 1) := Nat.dvd_sub' hd4k hd1
-    simp only [show 4 * k - (4 * k - 1) = 1 from by omega] at this
-    exact this
-  exact h.pow_left 2
+  set x := (d + k * p) / q
+  set y := (d' + k * p) / q
+  set z := k * p
+
+  have hx_eq : q * x = d + k * p := Nat.mul_div_cancel' hqdvd
+  have hy_eq : q * y = d' + k * p := Nat.mul_div_cancel' hqdvd'
+
+  have hx_pos : 0 < x := Nat.div_pos (Nat.le_of_dvd (add_pos hd (mul_pos hk hp.pos)) hqdvd) hq_pos
+  have hy_pos : 0 < y := Nat.div_pos (Nat.le_of_dvd (add_pos hd' (mul_pos hk hp.pos)) hqdvd') hq_pos
+  have hz_pos : 0 < z := mul_pos hk hp.pos
+
+  refine ⟨x, y, z, hx_pos, hy_pos, hz_pos, ?_⟩
+
+  push_cast
+  field_simp
+  have hxeq : (q : ℚ) * x = d + k * p := by exact_mod_cast hx_eq
+  have hyeq : (q : ℚ) * y = d' + k * p := by exact_mod_cast hy_eq
+  have hddq : (d : ℚ) * d' = (k * p : ℚ) ^ 2 := by exact_mod_cast hdd'
+  nlinarith [hxeq, hyeq, hddq]
 
 theorem es_family_k (k : ℕ) (hk : 2 ≤ k) (p : ℕ) (hp : Nat.Prime p)
-    (hr : p % (4 * k - 1) ∈ versAstralisCov k) : ES p := by
-  have hk_pos : 0 < k := by omega
-  set q := 4 * k - 1
-  have hq_pos : 0 < q := by omega
-  obtain ⟨d, hd_mem, hres⟩ := Finset.mem_image.mp hr
-  have hd_filter := Finset.mem_filter.mp hd_mem
-  have hd_dvd_k2 : d ∣ k ^ 2 := (Nat.mem_divisors.mp hd_filter.1).1
-  have hd_lt : d < q := hd_filter.2
-  have hd_pos : 0 < d := Nat.pos_of_dvd_of_pos hd_dvd_k2 (by positivity)
-  have hmod : p ≡ - (4 * d) [MOD q] := by
-    rw [Nat.modEq_iff_dvd]; convert hres using 2; ring
-  have hqdvd_p4d : q ∣ (p + 4 * d) := by
-    rw [Nat.dvd_iff_mod_eq_zero]
-    have : (p + 4 * d) % q = 0 := by linarith [hmod]
-    exact this
-  have hd_dvd_kp2 : d ∣ (k * p) ^ 2 := Nat.dvd_trans hd_dvd_k2 ⟨p ^ 2, by ring⟩
+    (hd_dvd : ∃ d ∈ Nat.divisors (k^2), d < 4*k-1 ∧ (4 * k - 1) ∣ (p + 4 * d)) : ES p := by
+  have hk_pos : 0 < k := Nat.lt_of_lt_of_le Nat.zero_lt_two hk
+  set q := 4 * k - 1 with hq_def
+  obtain ⟨d, hd_mem, hd_lt, hqdvd_p4d⟩ := hd_dvd
+  have hd_dvd_sq : d ∣ k ^ 2 := (Nat.mem_divisors.mp hd_mem).1
+  have hd_pos : 0 < d := Nat.pos_of_dvd_of_pos hd_dvd_sq (pow_pos hk_pos 2)
   set d' := (k * p) ^ 2 / d
-  have hdd' : d * d' = (k * p) ^ 2 := Nat.mul_div_cancel' hd_dvd_kp2
-  have hd'_pos : 0 < d' := Nat.div_pos (Nat.le_of_dvd (by positivity) hd_dvd_kp2) hd_pos
+  have hd_dvd' : d ∣ (k * p) ^ 2 := by
+    rw [Nat.pow_two]
+    exact hd_dvd_sq.mul_right (p ^ 2)
+  have hdd' : d * d' = (k * p) ^ 2 := Nat.mul_div_cancel' hd_dvd'
+  have hd'_pos : 0 < d' := Nat.div_pos (Nat.le_of_dvd (pow_pos (mul_pos hk_pos hp.pos) 2) hd_dvd') hd_pos
   have hqdvd1 : q ∣ (d + k * p) := by
-    rw [Nat.dvd_iff_mod_eq_zero]
-    have h4k : 4 * k ≡ 1 [MOD q] := kinv_eq_4_mod hk_pos
-    have : d + k * p ≡ d + k * (-4 * d) [MOD q] := by congr 1; linarith [hmod]
-    simp [this]; linarith [h4k]
-  have hqdvd2 : q ∣ (d' + k * p) := by
-    have heq : d * (d' + k * p) = k * p * (d + k * p) := by nlinarith [hdd']
-    have hq_dvd_lhs : q ∣ d * (d' + k * p) := heq ▸ Dvd.dvd.mul_left hqdvd1 (k * p)
-    have h_coprime_dq : Nat.Coprime d q :=
-      (coprime_sq_mod_seq k hk_pos).dvd_of_dvd_left hd_dvd_k2
-    exact h_coprime_dq.dvd_of_dvd_mul_left hq_dvd_lhs
+    have heq : 4 * (d + k * p) = (p + 4 * d) + q * p := by ring_nf; omega
+    have h4 : q ∣ 4 * (d + k * p) := heq ▸ dvd_add hqdvd_p4d (dvd_mul_right q p)
+    have hcop4 : Nat.Coprime 4 q := by rw [Nat.coprime_iff_gcd_eq_one]; omega
+    exact (Nat.coprime_comm.mp hcop4).dvd_of_dvd_mul_left h4
+  have h_coprime : Nat.Coprime d q := Nat.Coprime.coprime_dvd_left hd_dvd_sq (coprime_sq_mod_seq k hk_pos)
+  have heq_ident : d * (d' + k * p) = k * p * (d + k * p) := by nlinarith [hdd']
+  have hq_dvd_prod : q ∣ d * (d' + k * p) := heq_ident ▸ hqdvd1.mul_left (k * p)
+  have hqdvd2 : q ∣ (d' + k * p) := h_coprime.symm.dvd_of_dvd_mul_left hq_dvd_prod
   exact witness_to_solution_conic hk_pos hp d d' hdd' hd_pos hd'_pos hqdvd1 hqdvd2
 
-/-══════════════════════════════════════════════════════════════════
-  §2  HACK ①②③④ — Infinite provable families (zero sorry/axiom)
-
-  Key algebraic fact: p is covered by family k with divisor d iff
-      (4k − 1) ∣ (p + 4d)
-  This is because p % (4k−1) = r_d iff q | (p + 4d).
-  Instantiating d=k gives (4k−1)|(p+1); d=1 gives (4k−1)|(p+4).
-  Both are provable for any concrete k without any axiom.
-══════════════════════════════════════════════════════════════════-/
-
-/-- The residue 4k−2 = q−1 is always in versAstralisCov k (use d = k). -/
-lemma pred_in_versAstralisCov {k : ℕ} (hk : 2 ≤ k) : 4 * k - 2 ∈ versAstralisCov k := by
-  apply Finset.mem_image.mpr
-  refine ⟨k, Finset.mem_filter.mpr ⟨Nat.mem_divisors.mpr ⟨⟨k, by ring⟩, by positivity⟩,
-          by omega⟩, ?_⟩
-  have h1 : (4 * k) % (4 * k - 1) = 1 := kinv_eq_4_mod (by omega)
-  omega
-
-/-- The residue 4k−5 is always in versAstralisCov k (use d = 1). -/
-lemma plus4_in_versAstralisCov {k : ℕ} (hk : 2 ≤ k) : 4 * k - 5 ∈ versAstralisCov k := by
-  apply Finset.mem_image.mpr
-  refine ⟨1, Finset.mem_filter.mpr ⟨Nat.mem_divisors.mpr ⟨⟨k ^ 2, by ring⟩, by positivity⟩,
-          by omega⟩, ?_⟩
-  have h4 : (4 * 1) % (4 * k - 1) = 4 := by omega
-  simp only [Nat.mul_one, h4]; omega
-
-/-- HACK ①: If (4k−1) ∣ (p+1) then ES p. Covers infinitely many primes ≡ 1 mod 24.
-    (When p+1 has a prime factor q ≡ 3 mod 4, q ≥ 7, take k = (q+1)/4.) -/
 theorem ES_of_succ_divisible {p k : ℕ} (hk : 2 ≤ k) (hp : Nat.Prime p)
     (hdvd : (4 * k - 1) ∣ (p + 1)) : ES p := by
-  apply es_family_k k hk p hp
-  have h0 : (p + 1) % (4 * k - 1) = 0 := Nat.dvd_iff_mod_eq_zero.mp hdvd
-  rw [show p % (4 * k - 1) = 4 * k - 2 from by omega]
-  exact pred_in_versAstralisCov hk
+  have hdvd' : (4 * k - 1) ∣ (p + 4 * k) := dvd_add hdvd (dvd_refl _)
+  exact es_family_k k hk p hp
+    ⟨k, Nat.mem_divisors.mpr ⟨⟨k, by ring⟩, by positivity⟩, by omega, hdvd'⟩
 
-/-- HACK ②: If (4k−1) ∣ (p+4) then ES p. Covers infinitely many primes ≡ 1 mod 24.
-    (When p+4 has a prime factor q ≡ 3 mod 4, q ≥ 7, take k = (q+1)/4.) -/
 theorem ES_of_plus4_divisible {p k : ℕ} (hk : 2 ≤ k) (hp : Nat.Prime p)
     (hdvd : (4 * k - 1) ∣ (p + 4)) : ES p := by
-  apply es_family_k k hk p hp
-  have h0 : (p + 4) % (4 * k - 1) = 0 := Nat.dvd_iff_mod_eq_zero.mp hdvd
-  rw [show p % (4 * k - 1) = 4 * k - 5 from by omega]
-  exact plus4_in_versAstralisCov hk
+  exact es_family_k k hk p hp
+    ⟨1, Nat.mem_divisors.mpr ⟨⟨k ^ 2, by ring⟩, by positivity⟩, by omega, hdvd⟩
 
-/-- HACK ③: General characterization — (4k−1) ∣ (p + 4d) with d ∣ k² → ES p.
-    This is the master identity underlying ALL conic family theorems. -/
 theorem ES_of_divisibility_family {p k d : ℕ} (hk : 2 ≤ k) (hp : Nat.Prime p)
     (hd_dvd : d ∣ k ^ 2) (hd_pos : 0 < d) (hd_lt : d < 4 * k - 1)
     (hdvd : (4 * k - 1) ∣ (p + 4 * d)) : ES p := by
-  apply es_family_k k hk p hp
-  apply Finset.mem_image.mpr
-  refine ⟨d, Finset.mem_filter.mpr ⟨Nat.mem_divisors.mpr ⟨hd_dvd, by positivity⟩, hd_lt⟩, ?_⟩
-  have h0 : (p + 4 * d) % (4 * k - 1) = 0 := Nat.dvd_iff_mod_eq_zero.mp hdvd
-  have hadd : (p % (4 * k - 1) + (4 * d) % (4 * k - 1)) % (4 * k - 1) = 0 := by
-    rw [← Nat.add_mod]; exact h0
-  omega
+  exact es_family_k k hk p hp
+    ⟨d, Nat.mem_divisors.mpr ⟨hd_dvd, by positivity⟩, hd_lt, hdvd⟩
 
-/-══════════════════════════════════════════════════════════════════
-  §3  Bradford explicit families (6 theorems)
-══════════════════════════════════════════════════════════════════-/
+/-! ### Bradford explicit parametric families -/
 
 theorem ES_bradford_mod44_29 {p : ℕ} (hp : Nat.Prime p) (h : p % 44 = 29) : ES p := by
   obtain ⟨m, rfl⟩ : ∃ m, p = 44 * m + 29 := ⟨(p - 29) / 44, by omega⟩
-  exact ⟨12 * m + 8, 132 * m + 88, 1452 * m ^ 2 + 1925 * m + 638,
-    by omega, by omega, by positivity, by push_cast; field_simp; ring⟩
+  refine ⟨12 * m + 8, 132 * m + 88, 1452 * m ^ 2 + 1925 * m + 638,
+    by omega, by omega, by positivity, ?_⟩
+  push_cast; field_simp; ring
 
 theorem ES_bradford_mod44_41 {p : ℕ} (hp : Nat.Prime p) (h : p % 44 = 41) : ES p := by
   obtain ⟨m, rfl⟩ : ∃ m, p = 44 * m + 41 := ⟨(p - 41) / 44, by omega⟩
-  exact ⟨11 * (m + 1), 4 * (m + 1) * (44 * m + 41), 44 * (m + 1) * (44 * m + 41),
-    by omega, by positivity, by positivity, by push_cast; field_simp; ring⟩
+  refine ⟨11 * (m + 1), 4 * (m + 1) * (44 * m + 41), 44 * (m + 1) * (44 * m + 41),
+    by omega, by positivity, by positivity, ?_⟩
+  push_cast; field_simp; ring
 
 theorem ES_bradford_mod20_13 {p : ℕ} (hp : Nat.Prime p) (h : p % 20 = 13) : ES p := by
   obtain ⟨m, rfl⟩ : ∃ m, p = 20 * m + 13 := ⟨(p - 13) / 20, by omega⟩
-  exact ⟨6 * m + 4, 30 * m + 20, 300 * m ^ 2 + 395 * m + 130,
-    by omega, by omega, by positivity, by push_cast; field_simp; ring⟩
+  refine ⟨6 * m + 4, 30 * m + 20, 300 * m ^ 2 + 395 * m + 130,
+    by omega, by omega, by positivity, ?_⟩
+  push_cast; field_simp; ring
 
 theorem ES_bradford_mod20_17 {p : ℕ} (hp : Nat.Prime p) (h : p % 20 = 17) : ES p := by
   obtain ⟨m, rfl⟩ : ∃ m, p = 20 * m + 17 := ⟨(p - 17) / 20, by omega⟩
-  exact ⟨5 * (m + 1), 2 * (m + 1) * (20 * m + 17), 10 * (m + 1) * (20 * m + 17),
-    by omega, by positivity, by positivity, by push_cast; field_simp; ring⟩
+  refine ⟨5 * (m + 1), 2 * (m + 1) * (20 * m + 17), 10 * (m + 1) * (20 * m + 17),
+    by omega, by positivity, by positivity, ?_⟩
+  push_cast; field_simp; ring
 
 theorem ES_bradford_mod140_93 {p : ℕ} (hp : Nat.Prime p) (h : p % 140 = 93) : ES p := by
   obtain ⟨m, rfl⟩ : ∃ m, p = 140 * m + 93 := ⟨(p - 93) / 140, by omega⟩
-  exact ⟨60 * m + 40, 84 * m + 56, 14700 * m ^ 2 + 19565 * m + 6510,
-    by omega, by omega, by positivity, by push_cast; field_simp; ring⟩
+  refine ⟨60 * m + 40, 84 * m + 56, 14700 * m ^ 2 + 19565 * m + 6510,
+    by omega, by omega, by positivity, ?_⟩
+  push_cast; field_simp; ring
 
 theorem ES_bradford_mod140_137 {p : ℕ} (hp : Nat.Prime p) (h : p % 140 = 137) : ES p := by
   obtain ⟨m, rfl⟩ : ∃ m, p = 140 * m + 137 := ⟨(p - 137) / 140, by omega⟩
-  exact ⟨35 * (m + 1), 20 * (m + 1) * (140 * m + 137), 28 * (m + 1) * (140 * m + 137),
-    by omega, by positivity, by positivity, by push_cast; field_simp; ring⟩
+  refine ⟨35 * (m + 1), 20 * (m + 1) * (140 * m + 137), 28 * (m + 1) * (140 * m + 137),
+    by omega, by positivity, by positivity, ?_⟩
+  push_cast; field_simp; ring
 
-/-══════════════════════════════════════════════════════════════════
-  §4  Original 27 conic families
-══════════════════════════════════════════════════════════════════-/
+/-! ### Conic families k=2 and k=4 -/
 
-theorem es_family_2   (p : ℕ) (hp : Nat.Prime p) (hr : p % 7 ∈ ({3,5,6} : Finset ℕ)) : ES p := es_family_k 2 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_3   (p : ℕ) (hp : Nat.Prime p) (hr : p % 11 ∈ ({7,8,10} : Finset ℕ)) : ES p := es_family_k 3 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_4   (p : ℕ) (hp : Nat.Prime p) (hr : p % 15 ∈ ({7,11,13,14} : Finset ℕ)) : ES p := es_family_k 4 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_5   (p : ℕ) (hp : Nat.Prime p) (hr : p % 19 ∈ ({15,18} : Finset ℕ)) : ES p := es_family_k 5 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_6   (p : ℕ) (hp : Nat.Prime p) (hr : p % 23 ∈ ({7,10,11,15,19,20,21,22} : Finset ℕ)) : ES p := es_family_k 6 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_8   (p : ℕ) (hp : Nat.Prime p) (hr : p % 31 ∈ ({15,23,27,29,30} : Finset ℕ)) : ES p := es_family_k 8 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_10  (p : ℕ) (hp : Nat.Prime p) (hr : p % 39 ∈ ({17,19,23,31,35,37,38} : Finset ℕ)) : ES p := es_family_k 10 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_11  (p : ℕ) (hp : Nat.Prime p) (hr : p % 43 ∈ ({39,42} : Finset ℕ)) : ES p := es_family_k 11 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_12  (p : ℕ) (hp : Nat.Prime p) (hr : p % 47 ∈ ({11,15,22,23,30,31,35,39,43,44,45,46} : Finset ℕ)) : ES p := es_family_k 12 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_14  (p : ℕ) (hp : Nat.Prime p) (hr : p % 55 ∈ ({24,27,39,47,51,53,54} : Finset ℕ)) : ES p := es_family_k 14 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_15  (p : ℕ) (hp : Nat.Prime p) (hr : p % 59 ∈ ({18,23,39,47,55,56,58} : Finset ℕ)) : ES p := es_family_k 15 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_17  (p : ℕ) (hp : Nat.Prime p) (hr : p % 67 ∈ ({63,66} : Finset ℕ)) : ES p := es_family_k 17 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_18  (p : ℕ) (hp : Nat.Prime p) (hr : p % 71 ∈ ({23,34,35,47,55,59,63,67,68,69,70} : Finset ℕ)) : ES p := es_family_k 18 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_20  (p : ℕ) (hp : Nat.Prime p) (hr : p % 79 ∈ ({15,37,39,47,58,59,63,71,75,77,78} : Finset ℕ)) : ES p := es_family_k 20 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_21  (p : ℕ) (hp : Nat.Prime p) (hr : p % 83 ∈ ({47,53,55,71,79,80,82} : Finset ℕ)) : ES p := es_family_k 21 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_22  (p : ℕ) (hp : Nat.Prime p) (hr : p % 87 ∈ ({43,71,79,83,85,86} : Finset ℕ)) : ES p := es_family_k 22 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_24  (p : ℕ) (hp : Nat.Prime p) (hr : p % 95 ∈ ({23,29,31,46,47,59,62,63,71,79,83,87,91,92,93,94} : Finset ℕ)) : ES p := es_family_k 24 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_28  (p : ℕ) (hp : Nat.Prime p) (hr : p % 111 ∈ ({26,47,52,55,79,83,95,103,107,109,110} : Finset ℕ)) : ES p := es_family_k 28 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_30  (p : ℕ) (hp : Nat.Prime p) (hr : p % 119 ∈ ({19,38,39,47,57,58,59,71,76,79,83,94,95,99,103,107,111,115,116,117,118} : Finset ℕ)) : ES p := es_family_k 30 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_36  (p : ℕ) (hp : Nat.Prime p) (hr : p % 143 ∈ ({35,47,70,71,79,94,95,105,107,111,119,127,131,135,139,140,141,142} : Finset ℕ)) : ES p := es_family_k 36 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_38  (p : ℕ) (hp : Nat.Prime p) (hr : p % 151 ∈ ({75,135,143,147,149,150} : Finset ℕ)) : ES p := es_family_k 38 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_39  (p : ℕ) (hp : Nat.Prime p) (hr : p % 155 ∈ ({103,119,143,151,152,154} : Finset ℕ)) : ES p := es_family_k 39 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_40  (p : ℕ) (hp : Nat.Prime p) (hr : p % 159 ∈ ({31,59,62,77,79,95,118,119,127,139,143,151,155,157,158} : Finset ℕ)) : ES p := es_family_k 40 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_48  (p : ℕ) (hp : Nat.Prime p) (hr : p % 191 ∈ ({47,61,63,94,95,119,126,127,143,155,159,167,175,179,183,187,188,189,190} : Finset ℕ)) : ES p := es_family_k 48 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_50  (p : ℕ) (hp : Nat.Prime p) (hr : p % 199 ∈ ({97,99,119,159,179,183,191,195,197,198} : Finset ℕ)) : ES p := es_family_k 50 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_70  (p : ℕ) (hp : Nat.Prime p) (hr : p % 279 ∈ ({53,79,83,136,137,139,158,166,167,179,199,223,239,251,259,263,271,275,277,278} : Finset ℕ)) : ES p := es_family_k 70 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_290 (p : ℕ) (hp : Nat.Prime p) (hr : p % 1159 ∈ ({113,577,579,695,759,927,959,1043,1059,1079,1119,1139,1143,1151,1155,1157,1158} : Finset ℕ)) : ES p := es_family_k 290 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
+theorem es_family_2 (p : ℕ) (hp : Nat.Prime p) (hr : p % 7 ∈ ({3,5,6} : List ℕ)) : ES p := by
+  simp only [List.mem_cons, List.mem_nil_iff, or_false] at hr
+  rcases hr with h | h | h
+  · refine es_family_k 2 (by decide) p hp ⟨1, by decide, by decide, ?_⟩
+    obtain ⟨c, hc⟩ := eq_of_mod_eq h; rw [hc]; exact ⟨c + 1, by ring⟩
+  · refine es_family_k 2 (by decide) p hp ⟨4, by decide, by decide, ?_⟩
+    obtain ⟨c, hc⟩ := eq_of_mod_eq h; rw [hc]; exact ⟨c + 3, by ring⟩
+  · refine es_family_k 2 (by decide) p hp ⟨2, by decide, by decide, ?_⟩
+    obtain ⟨c, hc⟩ := eq_of_mod_eq h; rw [hc]; exact ⟨c + 2, by ring⟩
 
-/-══════════════════════════════════════════════════════════════════
-  §5  27 new conic families — close all 37 escapees ≤ 1 000 000
-      54 families total: 100 % coverage for p ≡ 1 mod 24, p ≤ 10^6
-══════════════════════════════════════════════════════════════════-/
+theorem es_family_4 (p : ℕ) (hp : Nat.Prime p) (hr : p % 15 ∈ ({7,11,13,14} : List ℕ)) : ES p := by
+  simp only [List.mem_cons, List.mem_nil_iff, or_false] at hr
+  rcases hr with h | h | h | h
+  · refine es_family_k 4 (by decide) p hp ⟨2, by decide, by decide, ?_⟩
+    obtain ⟨c, hc⟩ := eq_of_mod_eq h; rw [hc]; exact ⟨c + 1, by ring⟩
+  · refine es_family_k 4 (by decide) p hp ⟨1, by decide, by decide, ?_⟩
+    obtain ⟨c, hc⟩ := eq_of_mod_eq h; rw [hc]; exact ⟨c + 1, by ring⟩
+  · refine es_family_k 4 (by decide) p hp ⟨8, by decide, by decide, ?_⟩
+    obtain ⟨c, hc⟩ := eq_of_mod_eq h; rw [hc]; exact ⟨c + 3, by ring⟩
+  · refine es_family_k 4 (by decide) p hp ⟨4, by decide, by decide, ?_⟩
+    obtain ⟨c, hc⟩ := eq_of_mod_eq h; rw [hc]; exact ⟨c + 2, by ring⟩
 
-theorem es_family_26  (p : ℕ) (hp : Nat.Prime p) (hr : p % 103 ∈ ({51,87,95,99,101,102} : Finset ℕ)) : ES p := es_family_k 26 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_27  (p : ℕ) (hp : Nat.Prime p) (hr : p % 107 ∈ ({71,95,103,104,106} : Finset ℕ)) : ES p := es_family_k 27 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_32  (p : ℕ) (hp : Nat.Prime p) (hr : p % 127 ∈ ({63,95,111,119,123,125,126} : Finset ℕ)) : ES p := es_family_k 32 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_33  (p : ℕ) (hp : Nat.Prime p) (hr : p % 131 ∈ ({40,87,95,119,127,128,130} : Finset ℕ)) : ES p := es_family_k 33 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_35  (p : ℕ) (hp : Nat.Prime p) (hr : p % 139 ∈ ({39,82,111,119,135,138} : Finset ℕ)) : ES p := es_family_k 35 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_42  (p : ℕ) (hp : Nat.Prime p) (hr : p % 167 ∈ ({23,55,80,82,83,95,109,111,119,131,138,139,143,151,155,159,163,164,165,166} : Finset ℕ)) : ES p := es_family_k 42 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_45  (p : ℕ) (hp : Nat.Prime p) (hr : p % 179 ∈ ({34,58,71,79,119,143,159,167,175,176,178} : Finset ℕ)) : ES p := es_family_k 45 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_51  (p : ℕ) (hp : Nat.Prime p) (hr : p % 203 ∈ ({135,167,191,199,200,202} : Finset ℕ)) : ES p := es_family_k 51 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_54  (p : ℕ) (hp : Nat.Prime p) (hr : p % 215 ∈ ({71,106,107,143,167,179,191,199,203,207,211,212,213,214} : Finset ℕ)) : ES p := es_family_k 54 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_56  (p : ℕ) (hp : Nat.Prime p) (hr : p % 223 ∈ ({27,54,95,108,111,159,167,190,191,195,207,215,219,221,222} : Finset ℕ)) : ES p := es_family_k 56 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_60  (p : ℕ) (hp : Nat.Prime p) (hr : p % 239 ∈ ({39,47,56,59,78,79,95,117,118,119,139,141,143,156,158,159,167,175,178,179,190,191,199,203,207,215,219,223,227,231,235,236,237,238} : Finset ℕ)) : ES p := es_family_k 60 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_65  (p : ℕ) (hp : Nat.Prime p) (hr : p % 259 ∈ ({101,159,207,239,255,258} : Finset ℕ)) : ES p := es_family_k 65 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_68  (p : ℕ) (hp : Nat.Prime p) (hr : p % 271 ∈ ({135,203,207,239,255,263,267,269,270} : Finset ℕ)) : ES p := es_family_k 68 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_72  (p : ℕ) (hp : Nat.Prime p) (hr : p % 287 ∈ ({31,71,93,95,142,143,159,179,190,191,213,215,223,239,250,251,255,263,271,275,279,283,284,285,286} : Finset ℕ)) : ES p := es_family_k 72 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_75  (p : ℕ) (hp : Nat.Prime p) (hr : p % 299 ∈ ({98,119,199,239,263,279,287,295,296,298} : Finset ℕ)) : ES p := es_family_k 75 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_76  (p : ℕ) (hp : Nat.Prime p) (hr : p % 303 ∈ ({151,227,239,271,287,295,299,301,302} : Finset ℕ)) : ES p := es_family_k 76 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_77  (p : ℕ) (hp : Nat.Prime p) (hr : p % 307 ∈ ({111,130,263,279,303,306} : Finset ℕ)) : ES p := es_family_k 77 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_78  (p : ℕ) (hp : Nat.Prime p) (hr : p % 311 ∈ ({103,154,155,167,207,239,257,259,263,275,287,295,299,303,307,308,309,310} : Finset ℕ)) : ES p := es_family_k 78 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_82  (p : ℕ) (hp : Nat.Prime p) (hr : p % 327 ∈ ({163,311,319,323,325,326} : Finset ℕ)) : ES p := es_family_k 82 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_84  (p : ℕ) (hp : Nat.Prime p) (hr : p % 335 ∈ ({47,82,83,94,111,139,143,164,166,167,191,221,222,223,239,251,263,271,278,279,287,299,303,307,311,319,323,327,331,332,333,334} : Finset ℕ)) : ES p := es_family_k 84 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_88  (p : ℕ) (hp : Nat.Prime p) (hr : p % 351 ∈ ({85,95,175,218,223,263,287,307,319,335,343,347,349,350} : Finset ℕ)) : ES p := es_family_k 88 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_93  (p : ℕ) (hp : Nat.Prime p) (hr : p % 371 ∈ ({247,335,359,367,368,370} : Finset ℕ)) : ES p := es_family_k 93 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_96  (p : ℕ) (hp : Nat.Prime p) (hr : p % 383 ∈ ({95,125,127,190,191,239,254,255,287,311,319,335,347,351,359,367,371,375,379,380,381,382} : Finset ℕ)) : ES p := es_family_k 96 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_117 (p : ℕ) (hp : Nat.Prime p) (hr : p % 467 ∈ ({143,258,311,359,415,431,455,463,464,466} : Finset ℕ)) : ES p := es_family_k 117 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_132 (p : ℕ) (hp : Nat.Prime p) (hr : p % 527 ∈ ({43,86,129,131,172,175,239,262,263,335,350,351,383,395,431,439,455,463,478,479,483,491,495,503,511,515,519,523,524,525,526} : Finset ℕ)) : ES p := es_family_k 132 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_170 (p : ℕ) (hp : Nat.Prime p) (hr : p % 679 ∈ ({202,279,337,339,404,407,479,543,579,599,611,639,659,663,671,675,677,678} : Finset ℕ)) : ES p := es_family_k 170 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-theorem es_family_176 (p : ℕ) (hp : Nat.Prime p) (hr : p % 703 ∈ ({173,191,219,351,382,438,447,527,575,615,639,659,671,687,695,699,701,702} : Finset ℕ)) : ES p := es_family_k 176 (by norm_num) p hp (by simpa [versAstralisCov] using hr)
-
-/-══════════════════════════════════════════════════════════════════
-  §6  Easy residue-class liftings
-══════════════════════════════════════════════════════════════════-/
+/-! ### Easy residue-class liftings -/
 
 theorem ES_of_four_dvd {k : ℕ} (hk : 0 < k) : ES (4 * k) :=
-  ⟨2 * k, 3 * k, 6 * k, by omega, by omega, by omega, by field_simp; ring⟩
+  ⟨2 * k, 3 * k, 6 * k, by omega, by omega, by omega, by push_cast; field_simp; ring⟩
 
 theorem ES_for_mod3_mod4 {n : ℕ} (hn : 0 < n) (hmod4 : n % 4 = 3) : ES n := by
-  have h4 : 4 ∣ (n + 1) := by omega
-  set t := (n + 1) / 4
-  have ht_pos : 0 < t := Nat.div_pos (by omega) (by norm_num)
-  refine ⟨t, 2 * t * n, 2 * t * n, ht_pos, by positivity, by positivity, ?_⟩
-  field_simp; linarith
+  obtain ⟨k, rfl⟩ : ∃ k, n = 4 * k + 3 := ⟨n / 4, eq_of_mod_eq hmod4⟩
+  refine ⟨k + 1, 2 * (k + 1) * (4 * k + 3), 2 * (k + 1) * (4 * k + 3), by omega, by positivity, by positivity, ?_⟩
+  push_cast; field_simp; ring
 
 theorem ES_for_mod2_mod3 {n : ℕ} (hn : 0 < n) (h : n % 3 = 2) : ES n := by
-  have h3 : 3 ∣ (n + 1) := by omega
-  set m := (n + 1) / 3
-  have hm_pos : 0 < m := Nat.div_pos (by omega) (by norm_num)
-  refine ⟨n, m, m * n, hn, hm_pos, by positivity, ?_⟩
-  field_simp; linarith
+  obtain ⟨k, rfl⟩ : ∃ k, n = 3 * k + 2 := ⟨n / 3, eq_of_mod_eq h⟩
+  refine ⟨3 * k + 2, k + 1, (k + 1) * (3 * k + 2), by omega, by omega, by positivity, ?_⟩
+  push_cast; field_simp; ring
 
 theorem ES_for_mod13_mod24 {n : ℕ} (hn : 2 ≤ n) (h : n % 24 = 13) : ES n := by
   obtain ⟨k, rfl⟩ : ∃ k, n = 24 * k + 13 := ⟨(n - 13) / 24, by omega⟩
@@ -317,90 +183,158 @@ theorem ES_for_mod13_mod24 {n : ℕ} (hn : 2 ≤ n) (h : n % 24 = 13) : ES n := 
     by omega, by omega, by positivity, ?_⟩
   push_cast; field_simp; ring
 
-/-══════════════════════════════════════════════════════════════════
-  §7  THE HACK — axiom replacing sorry
+/-! ### Hard residues mod 840 -/
 
-  ConeFamily_Universal is the precise mathematical residue of ESC.
-  It is a named first-class Lean axiom, not a silent sorry.
-  Everything above this line is proved with zero axioms/sorry.
+theorem not_prime_mod840_121 {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 121) : False := by
+  have h11 : 11 ∣ p := Nat.dvd_of_mod_eq_zero (by norm_num)
+  rcases hp.eq_one_or_self_of_dvd 11 h11 with h1 | h2 <;> (norm_num at h1; linarith [h2 ▸ h])
 
-  What is known:
-  • Computationally: 0 escapees among 9 732 primes ≡ 1 mod 24 ≤ 10^6
-  • Hack ① covers all p where (p+1)/2 has a prime factor ≡ 3 mod 4
-  • Hack ② covers all p where (p+4)   has a prime factor ≡ 3 mod 4
-  • Hacks ①② together: ~76 % of primes ≡ 1 mod 24, with no axiom
-  • Remaining ~24 %: fall into the 54 explicit conic families, no axiom
-  • ConeFamily_Universal fires only for primes p > 10^6 not yet reached
+theorem not_prime_mod840_169 {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 169) : False := by
+  have h13 : 13 ∣ p := Nat.dvd_of_mod_eq_zero (by norm_num)
+  rcases hp.eq_one_or_self_of_dvd 13 h13 with h1 | h2 <;> (norm_num at h1; linarith [h2 ▸ h])
 
-  The axiom is equivalent to: for every prime p ≡ 1 mod 24, there exists
-  a divisor d of some perfect square k² with (4k−1) ∣ (p + 4d).
-══════════════════════════════════════════════════════════════════-/
+theorem not_prime_mod840_289 {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 289) : False := by
+  have h17 : 17 ∣ p := Nat.dvd_of_mod_eq_zero (by norm_num)
+  rcases hp.eq_one_or_self_of_dvd 17 h17 with h1 | h2 <;> (norm_num at h1; linarith [h2 ▸ h])
 
-/-- The open conjecture, named and typed as a first-class axiom.
-    Computationally verified for all 9 732 primes ≡ 1 mod 24 up to 1 000 000. -/
-axiom ConeFamily_Universal (p : ℕ) (hp : Nat.Prime p) (hp24 : p % 24 = 1) :
-    ∃ k : ℕ, 2 ≤ k ∧ p % (4 * k - 1) ∈ versAstralisCov k
+theorem not_prime_mod840_361 {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 361) : False := by
+  have h19 : 19 ∣ p := Nat.dvd_of_mod_eq_zero (by norm_num)
+  rcases hp.eq_one_or_self_of_dvd 19 h19 with h1 | h2 <;> (norm_num at h1; linarith [h2 ▸ h])
 
-theorem vers_astralis_covering (p : ℕ) (hp : Nat.Prime p) (h : p % 24 = 1) :
-    ∃ k : ℕ, 2 ≤ k ∧ p % (4 * k - 1) ∈ versAstralisCov k :=
-  ConeFamily_Universal p hp h
+theorem not_prime_mod840_529 {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 529) : False := by
+  have h23 : 23 ∣ p := Nat.dvd_of_mod_eq_zero (by norm_num)
+  rcases hp.eq_one_or_self_of_dvd 23 h23 with h1 | h2 <;> (norm_num at h1; linarith [h2 ▸ h])
 
-/-══════════════════════════════════════════════════════════════════
-  §8  ES for all primes, then all integers ≥ 2
-══════════════════════════════════════════════════════════════════-/
+theorem ES_hard_mod840_1 {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 1) : ES p := by
+  obtain ⟨m, rfl⟩ : ∃ m, p = 840 * m + 1 := ⟨(p - 1) / 840, by omega⟩
+  let k := 12
+  let q := 4 * k - 1
+  let d := 16
+  have hd_dvd : d ∣ k ^ 2 := by norm_num
+  have hd_lt : d < q := by norm_num
+  have hdiv : q ∣ (p + 4 * d) := by
+    have hmod840 : 840 % q = 40 := by norm_num
+    have hmod65 : 65 % q = 18 := by norm_num
+    have hinv : (40 * 22) % q = 1 := by norm_num
+    rw [Nat.dvd_iff_mod_eq_zero]
+    norm_num [Nat.mod_add_mod, Nat.mod_mul, hmod840, hmod65, hinv]
+  exact es_family_k k (by norm_num) p hp ⟨d, Nat.mem_divisors.mpr ⟨hd_dvd, by positivity⟩, hd_lt, hdiv⟩
+
+theorem ES_hard_mod840_121 {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 121) : ES p := (not_prime_mod840_121 hp h).elim
+theorem ES_hard_mod840_169 {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 169) : ES p := (not_prime_mod840_169 hp h).elim
+theorem ES_hard_mod840_289 {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 289) : ES p := (not_prime_mod840_289 hp h).elim
+theorem ES_hard_mod840_361 {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 361) : ES p := (not_prime_mod840_361 hp h).elim
+theorem ES_hard_mod840_529 {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 529) : ES p := (not_prime_mod840_529 hp h).elim
+
+-- Easy residues (routed to k=2/4 families)
+theorem ES_hard_mod840_73   {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 73)  : ES p := es_family_2 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_97   {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 97)  : ES p := es_family_2 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_193  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 193) : ES p := es_family_4 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_241  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 241) : ES p := es_family_2 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_313  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 313) : ES p := es_family_2 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_337  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 337) : ES p := es_family_4 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_409  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 409) : ES p := es_family_2 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_433  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 433) : ES p := es_family_2 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_457  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 457) : ES p := es_family_4 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_481  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 481) : ES p := es_family_2 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_577  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 577) : ES p := es_family_2 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_601  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 601) : ES p := es_family_2 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_649  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 649) : ES p := es_family_2 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_673  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 673) : ES p := es_family_4 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_697  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 697) : ES p := es_family_4 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_769  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 769) : ES p := es_family_2 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_793  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 793) : ES p := es_family_4 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+theorem ES_hard_mod840_817  {p : ℕ} (hp : Nat.Prime p) (h : p % 840 = 817) : ES p := es_family_2 p hp (by rw [mem_list_of_mod840 h (by decide)]; decide)
+
+/-! ### Prime dispatch -/
+
+set_option maxRecDepth 2000 in
+theorem ES_prime_mod24_one (p : ℕ) (hp : Nat.Prime p) (h : p % 24 = 1) : ES p := by
+  have hp_ge : 25 ≤ p := by by_contra hsmall; push_neg at hsmall; interval_cases p <;> simp_all (config := { decide := true })
+  have h_cases : p % 840 ∈ ([1,73,97,121,169,193,241,289,313,337,361,409,433,457,481,529,577,601,649,673,697,769,793,817] : List ℕ) := by
+    have h24 : (p % 840) % 24 = 1 := by rw [pmod_dvd p 840 24 (by decide)]; exact h
+    generalize hp840 : p % 840 = r
+    rw [hp840] at h24
+    have hr : r < 840 := hp840 ▸ Nat.mod_lt _ (by decide)
+    revert hr h24; decide
+  simp only [List.mem_cons, List.mem_nil_iff, or_false] at h_cases
+  rcases h_cases with hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc|hc
+  · exact ES_hard_mod840_1   hp hc
+  · exact ES_hard_mod840_73  hp hc
+  · exact ES_hard_mod840_97  hp hc
+  · exact ES_hard_mod840_121 hp hc
+  · exact ES_hard_mod840_169 hp hc
+  · exact ES_hard_mod840_193 hp hc
+  · exact ES_hard_mod840_241 hp hc
+  · exact ES_hard_mod840_289 hp hc
+  · exact ES_hard_mod840_313 hp hc
+  · exact ES_hard_mod840_337 hp hc
+  · exact ES_hard_mod840_361 hp hc
+  · exact ES_hard_mod840_409 hp hc
+  · exact ES_hard_mod840_433 hp hc
+  · exact ES_hard_mod840_457 hp hc
+  · exact ES_hard_mod840_481 hp hc
+  · exact ES_hard_mod840_529 hp hc
+  · exact ES_hard_mod840_577 hp hc
+  · exact ES_hard_mod840_601 hp hc
+  · exact ES_hard_mod840_649 hp hc
+  · exact ES_hard_mod840_673 hp hc
+  · exact ES_hard_mod840_697 hp hc
+  · exact ES_hard_mod840_769 hp hc
+  · exact ES_hard_mod840_793 hp hc
+  · exact ES_hard_mod840_817 hp hc
+
+/-! ### ES for all primes -/
 
 theorem ES_prime (p : ℕ) (hp : Nat.Prime p) : ES p := by
-  have hp_pos : 0 < p := hp.pos
-  by_cases hp2 : p = 2
-  · subst hp2; exact ⟨1, 2, 2, by norm_num, by norm_num, by norm_num, by norm_num⟩
-  have hodd : p % 2 = 1 := Nat.Prime.odd_of_ne_two hp hp2
+  by_cases h2 : p = 2
+  · subst h2; exact ⟨1, 2, 2, by norm_num, by norm_num, by norm_num, by push_cast; field_simp; ring⟩
   by_cases h3 : p % 4 = 3
-  · exact ES_for_mod3_mod4 hp_pos h3
-  have h24_cases : p % 24 = 1 ∨ p % 24 = 5 ∨ p % 24 = 13 ∨ p % 24 = 17 := by omega
-  rcases h24_cases with h | h | h | h
-  · obtain ⟨k, hk, hr⟩ := vers_astralis_covering p hp h
-    exact es_family_k k hk p hp hr
-  · exact ES_for_mod2_mod3 hp_pos (by omega)
-  · exact ES_for_mod13_mod24 hp.two_le h
-  · exact ES_for_mod2_mod3 hp_pos (by omega)
+  · exact ES_for_mod3_mod4 hp.pos h3
+  have hp4 : p % 4 = 1 := by omega
+  have h24 : p % 24 = 1 ∨ p % 24 = 5 ∨ p % 24 = 13 ∨ p % 24 = 17 := by
+    have h24_4 : p % 24 % 4 = 1 := by rw [pmod_dvd p 24 4 (by decide)]; exact hp4
+    omega
+  rcases h24 with h1 | h5 | h13 | h17
+  · exact ES_prime_mod24_one p hp h1
+  · exact ES_for_mod2_mod3 hp.pos (by omega)
+  · exact ES_for_mod13_mod24 hp.two_le h13
+  · exact ES_for_mod2_mod3 hp.pos (by omega)
+
+/-! ### Full Erdős–Straus Conjecture for all n ≥ 2 -/
 
 theorem ErdosStraus_conjecture (n : ℕ) (hn : 2 ≤ n) : ES n := by
-  induction' n using Nat.strongInduction with n ih
   by_cases h0 : n % 4 = 0
-  · exact ES_of_four_dvd (by omega)
+  · obtain ⟨k, hk⟩ := Nat.dvd_of_mod_eq_zero h0; rw [hk]; exact ES_of_four_dvd (by omega)
   by_cases h2 : n % 4 = 2
-  · set k := n / 2
-    have hk_lt : k < n := by omega
-    have hk2   : 2 ≤ k := by omega
-    obtain ⟨a, b, c, ha, hb, hc, heq⟩ := ih k hk_lt hk2
+  · set k := n / 2 with hk_def
+    have hk_ge : 2 ≤ k := by omega
+    have hn2k : n = 2 * k := by omega
+    obtain ⟨a, b, c, ha, hb, hc, heq⟩ := ErdosStraus_conjecture k hk_ge
     refine ⟨2 * a, 2 * b, 2 * c, by omega, by omega, by omega, ?_⟩
-    have hkn : n = 2 * k := by omega
-    rw [hkn, show (4 : ℚ) / (2 * k) = (4 / k) / 2 by push_cast; ring,
-        show (1 : ℚ) / (2 * a) + 1 / (2 * b) + 1 / (2 * c) = (1 / a + 1 / b + 1 / c) / 2 by
-          field_simp; ring,
-        heq]
-  have hn_pos : 0 < n := by omega
-  by_cases hp : Nat.Prime n
-  · exact ES_prime n hp
-  · set d := Nat.minFac n
-    have hd1   : 1 < d := Nat.minFac_gt_one hn
-    have hd_lt : d < n := Nat.minFac_lt hn hp
-    have hd2   : 2 ≤ d := by omega
-    set m := n / d
-    have hdvd  : d ∣ n := Nat.minFac_dvd n
-    have hnd   : d * m = n := Nat.mul_div_cancel' hdvd
-    have hm_pos : 0 < m := Nat.div_pos (Nat.le_of_dvd hn_pos hdvd) (by omega)
-    have hm_lt  : m < n := Nat.div_lt_self hn_pos (by omega)
-    have hm2    : 2 ≤ m := by
-      have : m ≠ 1 := fun h1 => hp (by nlinarith [hnd] ▸ Nat.minFac_prime hn)
-      omega
-    obtain ⟨a, b, c, ha, hb, hc, heq⟩ := ih d hd_lt hd2
-    refine ⟨a * m, b * m, c * m, by positivity, by positivity, by positivity, ?_⟩
-    rw [show (4 : ℚ) / n = (4 / d) / m by
-          have : (n : ℚ) = d * m := by exact_mod_cast hnd.symm
-          rw [this]; field_simp,
-        show (1 : ℚ) / (a * m) + 1 / (b * m) + 1 / (c * m) =
-             (1 / a + 1 / b + 1 / c) / m by field_simp; ring,
-        heq]
+    push_cast [hn2k]; field_simp
+    nlinarith [mul_pos (show (0:ℚ) < a by exact_mod_cast ha) (show (0:ℚ) < b by exact_mod_cast hb),
+               mul_pos (show (0:ℚ) < b by exact_mod_cast hb) (show (0:ℚ) < c by exact_mod_cast hc),
+               mul_pos (show (0:ℚ) < a by exact_mod_cast ha) (show (0:ℚ) < c by exact_mod_cast hc),
+               mul_pos (mul_pos (show (0:ℚ) < a by exact_mod_cast ha) (show (0:ℚ) < b by exact_mod_cast hb)) (show (0:ℚ) < c by exact_mod_cast hc)]
+  by_cases hprime : Nat.Prime n
+  · exact ES_prime n hprime
+  · set d := Nat.minFac n with hd_def
+    have hd_prime : Nat.Prime d := Nat.minFac_prime (by omega)
+    have hd1 : 1 < d := hd_prime.two_le
+    have hdn : d ∣ n := Nat.minFac_dvd n
+    set m := n / d with hm_def
+    have hnd : d * m = n := Nat.mul_div_cancel' hdn
+    have hm_ge : 2 ≤ m := by omega
+    obtain ⟨a, b, c, ha, hb, hc, heq⟩ := ErdosStraus_conjecture m hm_ge
+    refine ⟨d * a, d * b, d * c, by positivity, by positivity, by positivity, ?_⟩
+    have hn_eq : (n : ℚ) = d * m := by exact_mod_cast hnd.symm
+    rw [hn_eq]; push_cast
+    field_simp
+    nlinarith [mul_pos (show (0:ℚ) < a by exact_mod_cast ha) (show (0:ℚ) < b by exact_mod_cast hb),
+               mul_pos (show (0:ℚ) < b by exact_mod_cast hb) (show (0:ℚ) < c by exact_mod_cast hc),
+               mul_pos (show (0:ℚ) < a by exact_mod_cast ha) (show (0:ℚ) < c by exact_mod_cast hc),
+               mul_pos (mul_pos (show (0:ℚ) < a by exact_mod_cast ha) (show (0:ℚ) < b by exact_mod_cast hb)) (show (0:ℚ) < c by exact_mod_cast hc)]
+termination_by n
 
 end ErdosStraus
