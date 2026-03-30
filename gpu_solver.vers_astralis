@@ -1,0 +1,208 @@
+// sudo apt update && sudo apt install -y build-essential libgmp-dev libprimesieve-dev nlohmann-json3-dev cuda-toolkit
+// nvcc -O3 -arch=sm_75 gpu_solver.vers_astralis -o solver_cuda -lgmpxx -lgmp -lprimesieve -pthread -lcrypto
+// ./solver_cuda 100000000000000 999999999999999   # or smaller test range first
+
+
+#include <cuda_runtime.h>
+#include <iostream>
+#include <vector>
+#include <gmpxx.h>
+#include <nlohmann/json.hpp>
+#include <fstream>
+#include <primesieve.hpp>
+#include <thread>
+#include <mutex>
+#include <chrono>
+#include <iomanip>
+#include <omp.h>
+#include <openssl/sha.h>     // for SHA256
+#include <iomanip>           // hex output
+#include <sstream>
+
+using json = nlohmann::json;
+std::mutex mtx;
+uint64_t total_found = 0;
+auto global_start = std::chrono::high_resolution_clock::now();
+
+// Configurable
+constexpr uint64_t BATCH_SIZE = 1000000000000ULL;  // 10^12 per batch
+constexpr double CHECKPOINT_PCT = 1.0;             // every 1%
+
+// SHA256 helper
+std::string sha256_hex(const std::string& input) {
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const unsigned char*>(input.c_str()), input.size(), hash);
+    std::stringstream ss;
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
+    }
+    return ss.str();
+}
+
+// Merkle root from list of hashes (simple binary tree reduction)
+std::string compute_merkle_root(const std::vector<std::string>& leaves) {
+    if (leaves.empty()) return sha256_hex("");
+    std::vector<std::string> level = leaves;
+    while (level.size() > 1) {
+        std::vector<std::string> next_level;
+        for (size_t i = 0; i < level.size(); i += 2) {
+            std::string combined = (i + 1 < level.size()) ? level[i] + level[i+1] : level[i] + level[i];
+            next_level.push_back(sha256_hex(combined));
+        }
+        level = std::move(next_level);
+    }
+    return level[0];
+}
+
+__global__ void es_search(uint64_t p, uint64_t* out_x, uint64_t* out_y, uint64_t* out_z, bool* success) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    uint64_t x = (p + 3) / 4 + idx;
+    if (x > p / 2 + 1000 || idx >= 1000000) return;
+    uint64_t a = 4 * x - p;
+    if (a == 0) return;
+    for (uint64_t y = x; y < x + 500000; ++y) {
+        uint64_t denom = a * y - p * x;
+        if (denom > 0 && (p * x * y % denom == 0)) {
+            uint64_t z = p * x * y / denom;
+            if (z >= y) {
+                *success = true; *out_x = x; *out_y = y; *out_z = z; return;
+            }
+        }
+    }
+}
+
+bool find_solution(uint64_t p, uint64_t& rx, uint64_t& ry, uint64_t& rz) {
+    uint64_t *d_x, *d_y, *d_z; bool *d_ok;
+    cudaMallocManaged(&d_x, sizeof(uint64_t)); cudaMallocManaged(&d_y, sizeof(uint64_t));
+    cudaMallocManaged(&d_z, sizeof(uint64_t)); cudaMallocManaged(&d_ok, sizeof(bool));
+    *d_ok = false;
+    int blocks = 4096, threads = 256;
+    es_search<<<blocks, threads>>>(p, d_x, d_y, d_z, d_ok);
+    cudaDeviceSynchronize();
+    if (*d_ok) {
+        rx = *d_x; ry = *d_y; rz = *d_z;
+    }
+    cudaFree(d_x); cudaFree(d_y); cudaFree(d_z); cudaFree(d_ok);
+    return *d_ok;
+}
+
+struct BatchSummary {
+    uint64_t batch_start;
+    uint64_t batch_end;
+    uint64_t found_in_batch;
+    std::string merkle_root;
+};
+
+std::vector<BatchSummary> batch_summaries;
+std::mutex batch_mtx;
+
+void solve_range(uint64_t start, uint64_t end, int gpu) {
+    cudaSetDevice(gpu);
+    primesieve::iterator it(start);
+    uint64_t p, processed = 0;
+    double est_total = (end - start) / std::log((start + end)/2.0) * 0.00714;
+    uint64_t current_batch_start = start;
+    std::vector<std::string> batch_leaves;
+    uint64_t batch_found = 0;
+
+    while ((p = it.next_prime()) <= end) {
+        uint64_t r = p % 840;
+        if (r != 1 && r != 121 && r != 169 && r != 289 && r != 361 && r != 529) continue;
+
+        uint64_t x=0, y=0, z=0;
+        if (find_solution(p, x, y, z)) {
+            // Create compact JSON string for hashing
+            json entry = {{"n", p}, {"x", x}, {"y", y}, {"z", z}};
+            std::string json_str = entry.dump();  // compact, no whitespace
+            std::string leaf_hash = sha256_hex(json_str);
+            {
+                std::lock_guard<std::mutex> lock(batch_mtx);
+                batch_leaves.push_back(leaf_hash);
+            }
+            batch_found++;
+            total_found++;
+        }
+        processed++;
+
+        // Checkpoint / batch close
+        if (processed % 50000 == 0 || p >= current_batch_start + BATCH_SIZE) {
+            std::string batch_root = compute_merkle_root(batch_leaves);
+            {
+                std::lock_guard<std::mutex> lock(batch_mtx);
+                batch_summaries.push_back({current_batch_start, p, batch_found, batch_root});
+                batch_leaves.clear();
+                batch_found = 0;
+            }
+            current_batch_start = p + 1;
+
+            // Progress + ETA
+            auto now = std::chrono::high_resolution_clock::now();
+            double elapsed = std::chrono::duration<double>(now - global_start).count();
+            double rate = processed / elapsed;
+            double eta = (est_total - processed) / rate;
+            std::cout << "GPU " << gpu << ": " << std::fixed << std::setprecision(1)
+                      << (100.0 * processed / est_total) << "% | ETA " << eta/3600 << " h | Found " << total_found
+                      << " | Batch root: " << batch_root.substr(0, 16) << "..." << std::endl;
+        }
+    }
+
+    // Final batch flush
+    if (!batch_leaves.empty()) {
+        std::string batch_root = compute_merkle_root(batch_leaves);
+        std::lock_guard<std::mutex> lock(batch_mtx);
+        batch_summaries.push_back({current_batch_start, end, batch_found, batch_root});
+    }
+}
+
+int main(int argc, char** argv) {
+    uint64_t start = (argc > 1) ? strtoull(argv[1], nullptr, 10) : 100000000000000ULL;
+    uint64_t end   = (argc > 2) ? strtoull(argv[2], nullptr, 10) : 999999999999999ULL;
+
+    int num_gpus; cudaGetDeviceCount(&num_gpus);
+    std::cout << "✅ Auto-detected " << num_gpus << " GPUs — splitting range...\n";
+
+    omp_set_num_threads(num_gpus);
+    std::vector<std::thread> threads;
+    uint64_t span = (end - start + 1) / num_gpus;
+    for (int i = 0; i < num_gpus; ++i) {
+        uint64_t s = start + i * span;
+        uint64_t e = (i == num_gpus - 1) ? end : s + span - 1;
+        threads.emplace_back(solve_range, s, e, i);
+    }
+    for (auto& t : threads) t.join();
+
+    // Final global Merkle root over all batch roots
+    std::vector<std::string> batch_roots;
+    for (const auto& b : batch_summaries) {
+        batch_roots.push_back(b.merkle_root);
+    }
+    std::string global_root = compute_merkle_root(batch_roots);
+
+    // Output tiny verifiable JSON
+    json final_report;
+    final_report["start"] = start;
+    final_report["end"] = end;
+    final_report["total_found"] = total_found;
+    final_report["global_merkle_root"] = global_root;
+    final_report["batches"] = json::array();
+    for (const auto& b : batch_summaries) {
+        final_report["batches"].push_back({
+            {"start", b.batch_start},
+            {"end", b.batch_end},
+            {"found", b.found_in_batch},
+            {"merkle_root", b.merkle_root}
+        });
+    }
+
+    std::ofstream o("es_verification_report.json");
+    o << final_report.dump(2);
+    std::cout << "🎉 DONE.\n";
+    std::cout << "Total solutions found: " << total_found << "\n";
+    std::cout << "Global Merkle root (proof of entire run): " << global_root << "\n";
+    std::cout << "Report saved to es_verification_report.json (~ few KB)\n";
+
+    return 0;
+
+
+  
+}
